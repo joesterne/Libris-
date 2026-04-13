@@ -1,0 +1,79 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "User profile and settings",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "email": { "type": "string", "format": "email" },
+        "displayName": { "type": "string" },
+        "photoURL": { "type": "string", "format": "uri" },
+        "readingGoal": { "type": "number", "description": "Annual reading goal in books" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "email"]
+    },
+    "Book": {
+      "title": "Book",
+      "description": "Book metadata",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Google Books ID or similar" },
+        "title": { "type": "string" },
+        "authors": { "type": "array", "items": { "type": "string" } },
+        "description": { "type": "string" },
+        "coverUrl": { "type": "string", "format": "uri" },
+        "pageCount": { "type": "number" },
+        "categories": { "type": "array", "items": { "type": "string" } }
+      },
+      "required": ["id", "title"]
+    },
+    "ReadingProgress": {
+      "title": "ReadingProgress",
+      "description": "Tracking a user's progress on a book",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "bookId": { "type": "string" },
+        "status": { "type": "string", "enum": ["reading", "completed", "wishlist"] },
+        "currentPage": { "type": "number" },
+        "totalPages": { "type": "number" },
+        "startedAt": { "type": "string", "format": "date-time" },
+        "finishedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "bookId", "status"]
+    },
+    "Review": {
+      "title": "Review",
+      "description": "User rating and review for a book",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "bookId": { "type": "string" },
+        "rating": { "type": "number" },
+        "review": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "bookId", "rating"]
+    }
+  },
+  "firestore": {
+    "/users/{uid}": {
+      "schema": "User",
+      "description": "User profiles"
+    },
+    "/books/{bookId}": {
+      "schema": "Book",
+      "description": "Cached book metadata"
+    },
+    "/reading_progress/{progressId}": {
+      "schema": "ReadingProgress",
+      "description": "User reading tracking"
+    },
+    "/reviews/{reviewId}": {
+      "schema": "Review",
+      "description": "Book reviews"
+    }
+  }
+}

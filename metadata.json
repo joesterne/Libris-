@@ -1,0 +1,6 @@
+{
+  "name": "Libris",
+  "description": "A comprehensive book tracking and recommendation platform with Goodreads integration, Libby availability checks, and an AI reading assistant.",
+  "requestFramePermissions": [],
+  "majorCapabilities": []
+}
