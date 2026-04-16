@@ -37,7 +37,10 @@ export const getBookById = async (id: string): Promise<Book | null> => {
 };
 
 // Simulated Libby availability check
-export const checkLibbyAvailability = (bookId: string): LibraryAvailability => {
+export const checkLibbyAvailability = async (bookId: string): Promise<LibraryAvailability> => {
+  // Simulate network delay
+  await new Promise(resolve => setTimeout(resolve, 1500));
+  
   // Deterministic "random" based on bookId string length/hash
   const hash = bookId.split('').reduce((acc, char) => acc + char.charCodeAt(0), 0);
   const mod = hash % 10;

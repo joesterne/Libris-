@@ -17,10 +17,11 @@ import {
   getDocs
 } from 'firebase/firestore';
 import { auth, db, signInWithGoogle, logout } from './firebase';
-import { Book, ReadingProgress, Review, UserProfile } from './types';
+import { Book, ReadingProgress, Review, UserProfile, LibraryAvailability } from './types';
 import { getBookRecommendations } from './lib/gemini';
 import { searchBooks, getBookById, checkLibbyAvailability } from './lib/googleBooks';
 import { BookCard } from './components/BookCard';
+import { LibbyBadge } from './components/LibbyBadge';
 import { ChatBot } from './components/ChatBot';
 import { GoalTracker } from './components/GoalTracker';
 import { Button } from './components/ui/button';
@@ -101,11 +102,35 @@ export default function App() {
   const [tempGoal, setTempGoal] = useState(12);
   
   const [selectedBookId, setSelectedBookId] = useState<string | null>(null);
+  const [libbyAvailability, setLibbyAvailability] = useState<LibraryAvailability | null>(null);
+  const [isCheckingLibby, setIsCheckingLibby] = useState(false);
   
   const [reviewBook, setReviewBook] = useState<Book | null>(null);
   const [reviewRating, setReviewRating] = useState(5);
   const [reviewText, setReviewText] = useState('');
   const [isSubmittingReview, setIsSubmittingReview] = useState(false);
+
+  // Libby Availability Effect
+  useEffect(() => {
+    if (!selectedBookId) {
+      setLibbyAvailability(null);
+      return;
+    }
+
+    const checkAvailability = async () => {
+      setIsCheckingLibby(true);
+      try {
+        const result = await checkLibbyAvailability(selectedBookId);
+        setLibbyAvailability(result);
+      } catch (error) {
+        console.error("Libby check failed", error);
+      } finally {
+        setIsCheckingLibby(false);
+      }
+    };
+
+    checkAvailability();
+  }, [selectedBookId]);
 
   // Auth Listener
   useEffect(() => {
@@ -680,8 +705,6 @@ export default function App() {
                 const book = books[selectedBookId] || searchResults.find(b => b.id === selectedBookId) || recommendations.find(b => b.id === selectedBookId);
                 if (!book) return <div className="p-20 text-center animate-pulse">Loading book details...</div>;
                 
-                const availability = checkLibbyAvailability(book.id);
-                
                 return (
                   <div className="grid grid-cols-1 lg:grid-cols-3 gap-12">
                     <div className="space-y-6">
@@ -767,9 +790,18 @@ export default function App() {
                         </div>
                         <div className="text-center">
                           <p className="text-[10px] font-black uppercase tracking-widest text-muted-foreground mb-1">Libby</p>
-                          <Badge variant={availability.status === 'available' ? 'default' : 'secondary'} className="font-bold text-[10px]">
-                            {availability.status === 'available' ? 'Available' : availability.status === 'waitlist' ? `${availability.estimatedWaitWeeks}w wait` : 'N/A'}
-                          </Badge>
+                          {isCheckingLibby ? (
+                            <div className="flex items-center justify-center gap-2">
+                              <Sparkles className="w-3 h-3 animate-spin text-blue-500" />
+                              <span className="text-[10px] font-bold animate-pulse">Checking...</span>
+                            </div>
+                          ) : libbyAvailability ? (
+                            <Badge variant={libbyAvailability.status === 'available' ? 'default' : 'secondary'} className="font-bold text-[10px]">
+                              {libbyAvailability.status === 'available' ? 'Available' : libbyAvailability.status === 'waitlist' ? `${libbyAvailability.estimatedWaitWeeks}w wait` : 'N/A'}
+                            </Badge>
+                          ) : (
+                            <span className="text-[10px] font-bold text-muted-foreground">N/A</span>
+                          )}
                         </div>
                       </div>
 
@@ -807,9 +839,22 @@ export default function App() {
                         const book = books[p.bookId];
                         if (!book) return null;
                         return (
-                          <div key={p.id} className="bg-white p-4 rounded-3xl shadow-sm flex gap-4 items-center relative overflow-hidden group cursor-pointer hover:shadow-md transition-shadow" onClick={() => handleBookClick(book.id)}>
+                          <div 
+                            key={p.id} 
+                            className="bg-white p-4 rounded-3xl shadow-sm flex gap-4 items-center relative overflow-hidden group cursor-pointer hover:shadow-md transition-shadow focus-visible:ring-2 focus-visible:ring-black outline-none" 
+                            onClick={() => handleBookClick(book.id)}
+                            role="button"
+                            tabIndex={0}
+                            aria-label={`View progress for ${book.title}`}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter' || e.key === ' ') {
+                                e.preventDefault();
+                                handleBookClick(book.id);
+                              }
+                            }}
+                          >
                             <div className="w-20 h-28 rounded-xl overflow-hidden shrink-0 shadow-md">
-                              <img src={book.coverUrl} alt="" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+                              <img src={book.coverUrl} alt={`Cover of ${book.title}`} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
                             </div>
                             <div className="flex-1 space-y-2">
                               <div className="flex justify-between items-start gap-2">
@@ -817,17 +862,7 @@ export default function App() {
                                   <p className="text-sm font-bold line-clamp-1">{book.title}</p>
                                   <p className="text-[10px] text-muted-foreground font-bold uppercase">{book.authors[0]}</p>
                                 </div>
-                                {(() => {
-                                  const availability = checkLibbyAvailability(book.id);
-                                  return (
-                                    <Badge 
-                                      variant={availability.status === 'available' ? 'default' : 'secondary'} 
-                                      className="text-[8px] px-1.5 h-5 bg-black/5 text-black border-none shadow-none shrink-0"
-                                    >
-                                      {availability.status === 'available' ? 'Available' : availability.status === 'waitlist' ? `${availability.estimatedWaitWeeks}w` : 'N/A'}
-                                    </Badge>
-                                  );
-                                })()}
+                                <LibbyBadge bookId={book.id} />
                               </div>
                               <div className="space-y-1">
                                 <div className="flex justify-between text-[10px] font-bold">
@@ -987,29 +1022,44 @@ export default function App() {
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: -20 }}
             >
-              <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-8">
-                <TabsList className="bg-white/50 p-1 rounded-2xl w-fit">
-                  <TabsTrigger value="reading" className="rounded-xl px-8">Reading</TabsTrigger>
-                  <TabsTrigger value="wishlist" className="rounded-xl px-8">Wishlist</TabsTrigger>
-                  <TabsTrigger value="completed" className="rounded-xl px-8">Completed</TabsTrigger>
-                </TabsList>
+              <Tabs defaultValue="all" className="w-full">
+                <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-8">
+                  <TabsList className="bg-white/50 p-1 rounded-2xl w-fit">
+                    <TabsTrigger value="all" className="rounded-xl px-8">All Books</TabsTrigger>
+                    <TabsTrigger value="reading" className="rounded-xl px-8">Reading</TabsTrigger>
+                    <TabsTrigger value="wishlist" className="rounded-xl px-8">Wishlist</TabsTrigger>
+                    <TabsTrigger value="completed" className="rounded-xl px-8">Completed</TabsTrigger>
+                  </TabsList>
 
-                <div className="flex items-center gap-2">
-                  <span className="text-xs font-bold uppercase tracking-widest text-muted-foreground">Sort by</span>
-                  <Select value={sortBy} onValueChange={(v: any) => setSortBy(v)}>
-                    <SelectTrigger className="w-[140px] bg-white border-none shadow-sm rounded-xl h-9 text-xs font-bold">
-                      <SelectValue placeholder="Sort by" />
-                    </SelectTrigger>
-                    <SelectContent className="rounded-xl border-none shadow-xl">
-                      <SelectItem value="date">Date Added</SelectItem>
-                      <SelectItem value="title">Title</SelectItem>
-                      <SelectItem value="author">Author</SelectItem>
-                    </SelectContent>
-                  </Select>
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs font-bold uppercase tracking-widest text-muted-foreground">Sort by</span>
+                    <Select value={sortBy} onValueChange={(v: any) => setSortBy(v)}>
+                      <SelectTrigger className="w-[140px] bg-white border-none shadow-sm rounded-xl h-9 text-xs font-bold">
+                        <SelectValue placeholder="Sort by" />
+                      </SelectTrigger>
+                      <SelectContent className="rounded-xl border-none shadow-xl">
+                        <SelectItem value="date">Date Added</SelectItem>
+                        <SelectItem value="title">Title</SelectItem>
+                        <SelectItem value="author">Author</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
                 </div>
-              </div>
-              
-              <TabsContent value="reading">
+
+                <TabsContent value="all">
+                  <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 gap-8">
+                    {sortBooks(readingProgress).map(p => books[p.bookId] && (
+                      <BookCard key={p.id} book={books[p.bookId]} onAction={handleBookAction} onClick={handleBookClick} />
+                    ))}
+                    {readingProgress.length === 0 && (
+                      <div className="col-span-full py-20 text-center bg-white/50 rounded-3xl border-2 border-dashed border-black/5">
+                        <p className="text-muted-foreground font-medium">Your library is empty. Start exploring!</p>
+                      </div>
+                    )}
+                  </div>
+                </TabsContent>
+                
+                <TabsContent value="reading">
                 <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 gap-8">
                   {sortBooks(currentReading).map(p => books[p.bookId] && (
                     <BookCard key={p.id} book={books[p.bookId]} onAction={handleBookAction} onClick={handleBookClick} />
@@ -1047,7 +1097,8 @@ export default function App() {
                   )}
                 </div>
               </TabsContent>
-            </motion.div>
+            </Tabs>
+          </motion.div>
           )}
 
           {activeTab === 'ai' && (
@@ -1096,7 +1147,19 @@ export default function App() {
                               <span className="text-xs text-muted-foreground">
                                 {isReview ? 'reviewed' : activity.status === 'completed' ? 'finished reading' : 'started reading'}
                               </span>
-                              <span className="font-bold text-sm cursor-pointer hover:underline" onClick={() => handleBookClick(activity.bookId)}>
+                              <span 
+                                className="font-bold text-sm cursor-pointer hover:underline focus-visible:ring-2 focus-visible:ring-black outline-none rounded-sm" 
+                                onClick={() => handleBookClick(activity.bookId)}
+                                role="button"
+                                tabIndex={0}
+                                onKeyDown={(e) => {
+                                  if (e.key === 'Enter' || e.key === ' ') {
+                                    e.preventDefault();
+                                    handleBookClick(activity.bookId);
+                                  }
+                                }}
+                                aria-label={`View details for ${book?.title}`}
+                              >
                                 {book?.title || 'a book'}
                               </span>
                             </div>
@@ -1107,8 +1170,20 @@ export default function App() {
                         </div>
 
                         <div className="flex gap-6 bg-black/[0.02] p-4 rounded-2xl">
-                          <div className="w-20 h-28 rounded-xl overflow-hidden shrink-0 shadow-sm cursor-pointer" onClick={() => handleBookClick(activity.bookId)}>
-                            <img src={book?.coverUrl || `https://picsum.photos/seed/${activity.bookId}/200/300`} alt="" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+                          <div 
+                            className="w-20 h-28 rounded-xl overflow-hidden shrink-0 shadow-sm cursor-pointer focus-visible:ring-2 focus-visible:ring-black outline-none" 
+                            onClick={() => handleBookClick(activity.bookId)}
+                            role="button"
+                            tabIndex={0}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter' || e.key === ' ') {
+                                e.preventDefault();
+                                handleBookClick(activity.bookId);
+                              }
+                            }}
+                            aria-label={`View cover for ${book?.title}`}
+                          >
+                            <img src={book?.coverUrl || `https://picsum.photos/seed/${activity.bookId}/200/300`} alt={`Cover of ${book?.title}`} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
                           </div>
                           <div className="flex-1 space-y-3">
                             {isReview ? (

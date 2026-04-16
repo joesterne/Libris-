@@ -14,21 +14,43 @@ interface BookCardProps {
 }
 
 export const BookCard: React.FC<BookCardProps> = ({ book, onAction, onClick, showAvailability = true }) => {
-  const availability = showAvailability ? checkLibbyAvailability(book.id) : null;
+  const [availability, setAvailability] = React.useState<LibraryAvailability | null>(null);
+
+  React.useEffect(() => {
+    if (showAvailability) {
+      checkLibbyAvailability(book.id).then(setAvailability);
+    }
+  }, [book.id, showAvailability]);
 
   return (
-    <Card className="overflow-hidden group hover:shadow-lg transition-all duration-300 border-none bg-white/50 backdrop-blur-sm cursor-pointer" onClick={() => onClick?.(book.id)}>
+    <Card 
+      className="overflow-hidden group hover:shadow-lg transition-all duration-300 border-none bg-white/50 backdrop-blur-sm cursor-pointer focus-visible:ring-2 focus-visible:ring-black outline-none" 
+      onClick={() => onClick?.(book.id)}
+      role="button"
+      tabIndex={0}
+      aria-label={`View details for ${book.title} by ${book.authors.join(', ')}`}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          onClick?.(book.id);
+        }
+      }}
+    >
       <div className="aspect-[2/3] relative overflow-hidden">
         <img 
           src={book.coverUrl} 
-          alt={book.title} 
+          alt={`Cover of ${book.title}`} 
           className="object-cover w-full h-full transition-transform duration-500 group-hover:scale-105"
           referrerPolicy="no-referrer"
         />
         {availability && (
           <div className="absolute top-2 right-2">
-            <Badge variant={availability.status === 'available' ? 'default' : 'secondary'} className="bg-white/90 text-black backdrop-blur-sm border-none shadow-sm">
-              <Library className="w-3 h-3 mr-1" />
+            <Badge 
+              variant={availability.status === 'available' ? 'default' : 'secondary'} 
+              className="bg-white/90 text-black backdrop-blur-sm border-none shadow-sm"
+              aria-label={`Libby status: ${availability.status === 'available' ? 'Available' : availability.status === 'waitlist' ? `${availability.estimatedWaitWeeks} weeks wait` : 'Unavailable'}`}
+            >
+              <Library className="w-3 h-3 mr-1" aria-hidden="true" />
               {availability.status === 'available' ? 'Available' : availability.status === 'waitlist' ? `${availability.estimatedWaitWeeks}w wait` : 'Unavailable'}
             </Badge>
           </div>
@@ -44,18 +66,26 @@ export const BookCard: React.FC<BookCardProps> = ({ book, onAction, onClick, sho
             variant="outline" 
             size="sm" 
             className="flex-1 h-8 text-[10px] uppercase tracking-wider font-bold"
-            onClick={() => onAction?.(book, 'reading')}
+            onClick={(e) => {
+              e.stopPropagation();
+              onAction?.(book, 'reading');
+            }}
+            aria-label={`Start reading ${book.title}`}
           >
-            <BookOpen className="w-3 h-3 mr-1" />
+            <BookOpen className="w-3 h-3 mr-1" aria-hidden="true" />
             Read
           </Button>
           <Button 
             variant="ghost" 
             size="sm" 
             className="flex-1 h-8 text-[10px] uppercase tracking-wider font-bold"
-            onClick={() => onAction?.(book, 'wishlist')}
+            onClick={(e) => {
+              e.stopPropagation();
+              onAction?.(book, 'wishlist');
+            }}
+            aria-label={`Add ${book.title} to your library`}
           >
-            <Plus className="w-3 h-3 mr-1" />
+            <Plus className="w-3 h-3 mr-1" aria-hidden="true" />
             Library
           </Button>
         </div>
@@ -63,9 +93,13 @@ export const BookCard: React.FC<BookCardProps> = ({ book, onAction, onClick, sho
           variant="secondary" 
           size="sm" 
           className="w-full h-8 text-[10px] uppercase tracking-wider font-bold bg-black/5 hover:bg-black hover:text-white transition-all"
-          onClick={() => onAction?.(book, 'completed')}
+          onClick={(e) => {
+            e.stopPropagation();
+            onAction?.(book, 'completed');
+          }}
+          aria-label={`Mark ${book.title} as completed`}
         >
-          <CheckCircle2 className="w-3 h-3 mr-1" />
+          <CheckCircle2 className="w-3 h-3 mr-1" aria-hidden="true" />
           Mark as Read
         </Button>
       </CardFooter>
