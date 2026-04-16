@@ -14,10 +14,12 @@ import {
   serverTimestamp,
   setDoc,
   getDoc,
-  getDocs
+  getDocs,
+  orderBy,
+  limit
 } from 'firebase/firestore';
 import { auth, db, signInWithGoogle, logout } from './firebase';
-import { Book, ReadingProgress, Review, UserProfile, LibraryAvailability } from './types';
+import { Book, ReadingProgress, Review, UserProfile, LibraryAvailability, RecommendationFeedback } from './types';
 import { getBookRecommendations } from './lib/gemini';
 import { searchBooks, getBookById, checkLibbyAvailability } from './lib/googleBooks';
 import { BookCard } from './components/BookCard';
@@ -76,7 +78,9 @@ import {
   Share2,
   Copy,
   Twitter,
-  Facebook
+  Facebook,
+  ThumbsUp,
+  ThumbsDown
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 
@@ -93,6 +97,11 @@ export default function App() {
   const [isSearching, setIsSearching] = useState(false);
   const [isRecommending, setIsRecommending] = useState(false);
   const [sortBy, setSortBy] = useState<'title' | 'author' | 'date'>('date');
+  const [activityFilter, setActivityFilter] = useState<'all' | 'reviews' | 'progress'>('all');
+  const [commLimit, setCommLimit] = useState(5);
+  const [isLoadingMore, setIsLoadingMore] = useState(false);
+  const [feedbackGiven, setFeedbackGiven] = useState<Record<string, 'up' | 'down'>>({});
+  const [recommendationFeedback, setRecommendationFeedback] = useState<RecommendationFeedback[]>([]);
   
   const [readingProgress, setReadingProgress] = useState<ReadingProgress[]>([]);
   const [books, setBooks] = useState<Record<string, Book>>({});
@@ -180,7 +189,8 @@ export default function App() {
       });
     });
 
-    const unsubscribeReviews = onSnapshot(collection(db, 'reviews'), (snapshot) => {
+    const qReviews = query(collection(db, 'reviews'), orderBy('createdAt', 'desc'), limit(commLimit));
+    const unsubscribeReviews = onSnapshot(qReviews, (snapshot) => {
       const revs = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data(), type: 'review' } as any));
       setReviews(revs);
       
@@ -193,7 +203,8 @@ export default function App() {
       });
     });
 
-    const unsubscribeGlobalProgress = onSnapshot(collection(db, 'reading_progress'), (snapshot) => {
+    const qGlobal = query(collection(db, 'reading_progress'), orderBy('updatedAt', 'desc'), limit(commLimit));
+    const unsubscribeGlobalProgress = onSnapshot(qGlobal, (snapshot) => {
       const progress = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data(), type: 'progress' } as any));
       setGlobalActivities(progress);
 
@@ -206,12 +217,22 @@ export default function App() {
       });
     });
 
+    const unsubscribeFeedback = onSnapshot(query(collection(db, 'recommendation_feedback'), where('uid', '==', user.uid)), (snapshot) => {
+      const fb = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as RecommendationFeedback));
+      setRecommendationFeedback(fb);
+      // Also update the local state for buttons if needed
+      const fbMap: Record<string, 'up' | 'down'> = {};
+      fb.forEach(f => fbMap[f.bookId] = f.type);
+      setFeedbackGiven(prev => ({ ...prev, ...fbMap }));
+    });
+
     return () => {
       unsubscribeProgress();
       unsubscribeReviews();
       unsubscribeGlobalProgress();
+      unsubscribeFeedback();
     };
-  }, [user]);
+  }, [user, commLimit]);
 
   // Recommendations Effect
   useEffect(() => {
@@ -222,8 +243,10 @@ export default function App() {
       try {
         const historyTitles = readingProgress.map(p => books[p.bookId]?.title).filter(Boolean);
         const currentTitles = readingProgress.filter(p => p.status === 'reading').map(p => books[p.bookId]?.title).filter(Boolean);
+        const liked = recommendationFeedback.filter(f => f.type === 'up').map(f => f.bookTitle);
+        const disliked = recommendationFeedback.filter(f => f.type === 'down').map(f => f.bookTitle);
         
-        const recs = await getBookRecommendations(historyTitles as string[], currentTitles as string[]);
+        const recs = await getBookRecommendations(historyTitles as string[], currentTitles as string[], liked, disliked);
         
         // Fetch full book metadata for recommendations
         const fullRecs = await Promise.all(
@@ -288,12 +311,16 @@ export default function App() {
       if (existing) {
         await updateDoc(doc(db, 'reading_progress', existing.id!), { 
           status,
+          userDisplayName: user.displayName,
+          userPhotoURL: user.photoURL,
           updatedAt: serverTimestamp()
         });
         toast.success(`Updated ${book.title} to ${status}`);
       } else {
         await addDoc(collection(db, 'reading_progress'), {
           uid: user.uid,
+          userDisplayName: user.displayName,
+          userPhotoURL: user.photoURL,
           bookId: book.id,
           status,
           currentPage: 0,
@@ -409,6 +436,30 @@ export default function App() {
     );
   }
 
+  const handleLoadMore = () => {
+    setIsLoadingMore(true);
+    setCommLimit(prev => prev + 5);
+    // The listener will automatically update as commLimit changes in the dependency array
+    setTimeout(() => setIsLoadingMore(false), 800);
+  };
+
+  const handleRecommendationFeedback = async (book: Book, type: 'up' | 'down') => {
+    if (!user) return;
+    try {
+      await addDoc(collection(db, 'recommendation_feedback'), {
+        uid: user.uid,
+        bookId: book.id,
+        bookTitle: book.title,
+        type,
+        createdAt: serverTimestamp()
+      });
+      setFeedbackGiven(prev => ({ ...prev, [book.id]: type }));
+      toast.success(type === 'up' ? "Glad you like this! We'll find more like it." : "Thanks for the feedback. We'll adjust your future recommendations.");
+    } catch (error) {
+      toast.error("Failed to save feedback");
+    }
+  };
+
   const currentReading = readingProgress.filter(p => p.status === 'reading');
   const completed = readingProgress.filter(p => p.status === 'completed').length;
   const wishlist = readingProgress.filter(p => p.status === 'wishlist');
@@ -516,7 +567,7 @@ export default function App() {
             { id: 'search', icon: Search, label: 'Search' },
             { id: 'library', icon: Library, label: 'My Library' },
             { id: 'ai', icon: Sparkles, label: 'AI Assistant' },
-            { id: 'social', icon: Users, label: 'Community' },
+            { id: 'community', icon: Users, label: 'Community' },
           ].map((item) => (
             <button
               key={item.id}
@@ -614,7 +665,7 @@ export default function App() {
                   {activeTab === 'search' && 'Discover'}
                   {activeTab === 'library' && 'Your Collection'}
                   {activeTab === 'ai' && 'AI Companion'}
-                  {activeTab === 'social' && 'Reading Feed'}
+                  {activeTab === 'community' && 'Community Insights'}
                 </>
               )}
             </h2>
@@ -901,32 +952,80 @@ export default function App() {
                       ))
                     ) : recommendations.length > 0 ? (
                       recommendations.map(book => (
-                        <div key={book.id} className="space-y-3">
+                        <div key={book.id} className="space-y-3 group relative">
                           <BookCard book={book} onAction={handleBookAction} onClick={handleBookClick} />
-                          <Button 
-                            variant="secondary" 
-                            size="sm" 
-                            className="w-full rounded-xl font-bold text-[10px] uppercase tracking-wider h-8 bg-white shadow-sm hover:bg-black hover:text-white transition-all"
-                            onClick={() => handleBookAction(book, 'wishlist')}
-                          >
-                            <Plus className="w-3 h-3 mr-2" />
-                            Add to Wishlist
-                          </Button>
+                          <div className="flex gap-2">
+                            <Button 
+                              variant="secondary" 
+                              size="sm" 
+                              className="flex-1 rounded-xl font-bold text-[10px] uppercase tracking-wider h-8 bg-white shadow-sm hover:bg-black hover:text-white transition-all"
+                              onClick={() => handleBookAction(book, 'wishlist')}
+                            >
+                              <Plus className="w-3 h-3 mr-2" />
+                              Wishlist
+                            </Button>
+                            <div className="flex gap-1">
+                              <Button
+                                variant={feedbackGiven[book.id] === 'up' ? 'default' : 'secondary'}
+                                size="icon"
+                                className={`h-8 w-8 rounded-xl transition-all ${feedbackGiven[book.id] === 'up' ? 'bg-green-500 text-white hover:bg-green-600' : 'bg-white hover:bg-black/5'}`}
+                                onClick={() => handleRecommendationFeedback(book, 'up')}
+                                disabled={!!feedbackGiven[book.id]}
+                                aria-label="Thumbs Up"
+                              >
+                                <ThumbsUp className="w-3 h-3" />
+                              </Button>
+                              <Button
+                                variant={feedbackGiven[book.id] === 'down' ? 'default' : 'secondary'}
+                                size="icon"
+                                className={`h-8 w-8 rounded-xl transition-all ${feedbackGiven[book.id] === 'down' ? 'bg-red-500 text-white hover:bg-red-600' : 'bg-white hover:bg-black/5'}`}
+                                onClick={() => handleRecommendationFeedback(book, 'down')}
+                                disabled={!!feedbackGiven[book.id]}
+                                aria-label="Thumbs Down"
+                              >
+                                <ThumbsDown className="w-3 h-3" />
+                              </Button>
+                            </div>
+                          </div>
                         </div>
                       ))
                     ) : (
                       searchResults.slice(0, 4).map(book => (
-                        <div key={book.id} className="space-y-3">
+                        <div key={book.id} className="space-y-3 group relative">
                           <BookCard book={book} onAction={handleBookAction} onClick={handleBookClick} />
-                          <Button 
-                            variant="secondary" 
-                            size="sm" 
-                            className="w-full rounded-xl font-bold text-[10px] uppercase tracking-wider h-8 bg-white shadow-sm hover:bg-black hover:text-white transition-all"
-                            onClick={() => handleBookAction(book, 'wishlist')}
-                          >
-                            <Plus className="w-3 h-3 mr-2" />
-                            Add to Wishlist
-                          </Button>
+                          <div className="flex gap-2">
+                            <Button 
+                              variant="secondary" 
+                              size="sm" 
+                              className="flex-1 rounded-xl font-bold text-[10px] uppercase tracking-wider h-8 bg-white shadow-sm hover:bg-black hover:text-white transition-all"
+                              onClick={() => handleBookAction(book, 'wishlist')}
+                            >
+                              <Plus className="w-3 h-3 mr-2" />
+                              Wishlist
+                            </Button>
+                            <div className="flex gap-1">
+                              <Button
+                                variant={feedbackGiven[book.id] === 'up' ? 'default' : 'secondary'}
+                                size="icon"
+                                className={`h-8 w-8 rounded-xl transition-all ${feedbackGiven[book.id] === 'up' ? 'bg-green-500 text-white hover:bg-green-600' : 'bg-white hover:bg-black/5'}`}
+                                onClick={() => handleRecommendationFeedback(book, 'up')}
+                                disabled={!!feedbackGiven[book.id]}
+                                aria-label="Thumbs Up"
+                              >
+                                <ThumbsUp className="w-3 h-3" />
+                              </Button>
+                              <Button
+                                variant={feedbackGiven[book.id] === 'down' ? 'default' : 'secondary'}
+                                size="icon"
+                                className={`h-8 w-8 rounded-xl transition-all ${feedbackGiven[book.id] === 'down' ? 'bg-red-500 text-white hover:bg-red-600' : 'bg-white hover:bg-black/5'}`}
+                                onClick={() => handleRecommendationFeedback(book, 'down')}
+                                disabled={!!feedbackGiven[book.id]}
+                                aria-label="Thumbs Down"
+                              >
+                                <ThumbsDown className="w-3 h-3" />
+                              </Button>
+                            </div>
+                          </div>
                         </div>
                       ))
                     )}
@@ -947,6 +1046,34 @@ export default function App() {
                   goal={profile?.readingGoal || 12} 
                   currentReading={currentReading.length} 
                 />
+
+                <Card className="border-none shadow-lg bg-white/50 backdrop-blur-sm rounded-3xl overflow-hidden">
+                  <CardContent className="p-6 space-y-4">
+                    <h4 className="text-sm font-black uppercase tracking-widest flex items-center gap-2">
+                      <Users className="w-4 h-4" />
+                      Community
+                    </h4>
+                    {activities.slice(0, 3).map((act: any) => (
+                      <div key={act.id} className="flex items-center gap-3 py-2 border-b border-black/5 last:border-none">
+                        <Avatar className="w-8 h-8">
+                          <AvatarImage src={act.userPhotoURL || act.photoURL} />
+                          <AvatarFallback>{(act.userDisplayName || 'R')[0]}</AvatarFallback>
+                        </Avatar>
+                        <div className="flex-1 min-w-0">
+                          <p className="text-[10px] font-bold truncate">
+                            {act.userDisplayName || 'Reader'}
+                          </p>
+                          <p className="text-[9px] text-muted-foreground truncate">
+                            {act.type === 'review' ? 'Reviewed' : 'Read'} {books[act.bookId]?.title}
+                          </p>
+                        </div>
+                      </div>
+                    ))}
+                    <Button variant="ghost" className="w-full text-[10px] font-bold uppercase tracking-widest h-8" onClick={() => setActiveTab('community')}>
+                      View Full Feed
+                    </Button>
+                  </CardContent>
+                </Card>
                 
                 <Card className="border-none shadow-lg bg-black text-white rounded-3xl overflow-hidden">
                   <CardContent className="p-6 space-y-4">
@@ -1113,28 +1240,49 @@ export default function App() {
             </motion.div>
           )}
 
-          {activeTab === 'social' && (
+          {activeTab === 'community' && (
             <motion.div 
-              key="social"
+              key="community"
               initial={{ opacity: 0, y: 20 }}
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: -20 }}
               className="max-w-2xl mx-auto space-y-8"
             >
-              <div className="flex items-center justify-between mb-2">
-                <h2 className="text-3xl font-black tracking-tighter uppercase">Community Feed</h2>
-                <Badge variant="secondary" className="bg-black/5 text-black border-none font-bold text-[10px] uppercase tracking-widest">
-                  {activities.length} Recent Activities
-                </Badge>
+              <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-2">
+                <div>
+                  <h2 className="text-3xl font-black tracking-tighter uppercase">Community Feed</h2>
+                  <p className="text-muted-foreground font-medium">See what other readers are discovering.</p>
+                </div>
+                <div className="flex items-center gap-3">
+                  <Tabs value={activityFilter} onValueChange={(v: any) => setActivityFilter(v)}>
+                    <TabsList className="bg-black/5 rounded-xl h-9">
+                      <TabsTrigger value="all" className="text-[10px] font-bold px-4">All</TabsTrigger>
+                      <TabsTrigger value="reviews" className="text-[10px] font-bold px-4">Reviews</TabsTrigger>
+                      <TabsTrigger value="progress" className="text-[10px] font-bold px-4">Activity</TabsTrigger>
+                    </TabsList>
+                  </Tabs>
+                  <Badge variant="secondary" className="bg-black text-white border-none font-bold text-[10px] uppercase tracking-widest px-3 py-1 h-9 flex items-center">
+                    {activities.length} Recent
+                  </Badge>
+                </div>
               </div>
 
-              {activities.length > 0 ? (
-                activities.map(activity => {
-                  const book = books[activity.bookId];
-                  const isReview = activity.type === 'review';
-                  
-                  return (
-                    <Card key={activity.id} className="border-none shadow-sm bg-white rounded-3xl overflow-hidden hover:shadow-md transition-shadow">
+              {(() => {
+                const filteredActivities = activities.filter(act => {
+                  if (activityFilter === 'all') return true;
+                  if (activityFilter === 'reviews') return act.type === 'review';
+                  if (activityFilter === 'progress') return act.type === 'progress';
+                  return true;
+                });
+
+                return filteredActivities.length > 0 ? (
+                  <>
+                    {filteredActivities.map(activity => {
+                      const book = books[activity.bookId];
+                      const isReview = activity.type === 'review';
+                      
+                      return (
+                        <Card key={activity.id} className="border-none shadow-sm bg-white rounded-3xl overflow-hidden hover:shadow-md transition-shadow">
                       <CardContent className="p-6">
                         <div className="flex items-start gap-4 mb-6">
                           <Avatar className="w-10 h-10 border-2 border-black/5">
@@ -1219,13 +1367,31 @@ export default function App() {
                       </CardContent>
                     </Card>
                   );
-                })
-              ) : (
-                <div className="py-20 text-center bg-white/50 rounded-3xl border-2 border-dashed border-black/5">
-                  <p className="text-muted-foreground font-medium">No community activity yet. Be the first to share!</p>
+                })}
+                
+                <div className="flex justify-center pt-4">
+                  <Button 
+                    variant="outline" 
+                    className="rounded-2xl px-10 h-12 font-bold bg-white border-2 border-black/5 hover:border-black transition-colors flex items-center gap-2"
+                    onClick={handleLoadMore}
+                    disabled={isLoadingMore}
+                  >
+                    {isLoadingMore ? (
+                      <Sparkles className="w-4 h-4 animate-spin" />
+                    ) : (
+                      <Users className="w-4 h-4" />
+                    )}
+                    {isLoadingMore ? "Discovering..." : "Load More Activity"}
+                  </Button>
                 </div>
-              )}
-            </motion.div>
+              </>
+            ) : (
+                <div className="py-20 text-center bg-white/50 rounded-3xl border-2 border-dashed border-black/5">
+                  <p className="text-muted-foreground font-medium">No {activityFilter !== 'all' ? activityFilter : 'community'} activity yet. Be the first to share!</p>
+                </div>
+              );
+            })()}
+          </motion.div>
           )}
         </AnimatePresence>
       </main>

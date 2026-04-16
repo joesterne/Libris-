@@ -2,15 +2,19 @@ import { GoogleGenAI } from "@google/genai";
 
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || '' });
 
-export const getBookRecommendations = async (history: string[], currentBooks: string[]) => {
+export const getBookRecommendations = async (history: string[], currentBooks: string[], liked: string[] = [], disliked: string[] = []) => {
   const prompt = `You are a professional librarian and book recommender. 
-  Based on this reading history: ${history.join(', ')}
-  And these books currently being read: ${currentBooks.join(', ')}
   
-  Recommend 5 books that the user might enjoy. For each book, provide:
+  User Reading Profile:
+  - Reading History: ${history.join(', ')}
+  - Currently Reading: ${currentBooks.join(', ')}
+  - Recommendations User Liked: ${liked.join(', ')}
+  - Recommendations User Disliked: ${disliked.join(', ')}
+  
+  Based on this profile, recommend 5 books that the user might enjoy. Adjust your logic based on what they liked and disliked. For each book, provide:
   1. Title
   2. Author
-  3. Why you recommend it (1-2 sentences)
+  3. Why you recommend it (1-2 sentences, mentioning how it relates to their profile or feedback)
   4. A search query for Google Books
   
   Format the response as a JSON array of objects.`;

@@ -46,3 +46,12 @@ export interface LibraryAvailability {
   status: 'available' | 'waitlist' | 'unavailable';
   estimatedWaitWeeks?: number;
 }
+
+export interface RecommendationFeedback {
+  id?: string;
+  uid: string;
+  bookId: string;
+  bookTitle: string;
+  type: 'up' | 'down';
+  createdAt: any;
+}
