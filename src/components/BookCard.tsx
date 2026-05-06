@@ -3,17 +3,17 @@ import { Book, LibraryAvailability } from '../types';
 import { Card, CardContent, CardFooter, CardHeader, CardTitle } from './ui/card';
 import { Badge } from './ui/badge';
 import { Button } from './ui/button';
-import { BookOpen, Clock, CheckCircle2, Library, Plus } from 'lucide-react';
+import { BookOpen, Clock, CheckCircle2, Library, Plus, ListPlus } from 'lucide-react';
 import { checkLibbyAvailability } from '../lib/googleBooks';
 
 interface BookCardProps {
   book: Book;
-  onAction?: (book: Book, action: 'reading' | 'wishlist' | 'completed') => void;
+  onAction?: (book: Book, action: 'reading' | 'wishlist' | 'completed' | 'reading_list') => void;
   onClick?: (bookId: string) => void;
   showAvailability?: boolean;
 }
 
-export const BookCard: React.FC<BookCardProps> = ({ book, onAction, onClick, showAvailability = true }) => {
+export const BookCard = React.memo(function BookCardComponent({ book, onAction, onClick, showAvailability = true }: BookCardProps) {
   const [availability, setAvailability] = React.useState<LibraryAvailability | null>(null);
 
   React.useEffect(() => {
@@ -89,20 +89,35 @@ export const BookCard: React.FC<BookCardProps> = ({ book, onAction, onClick, sho
             Library
           </Button>
         </div>
-        <Button 
-          variant="secondary" 
-          size="sm" 
-          className="w-full h-8 text-[10px] uppercase tracking-wider font-bold bg-black/5 hover:bg-black hover:text-white transition-all"
-          onClick={(e) => {
-            e.stopPropagation();
-            onAction?.(book, 'completed');
-          }}
-          aria-label={`Mark ${book.title} as completed`}
-        >
-          <CheckCircle2 className="w-3 h-3 mr-1" aria-hidden="true" />
-          Mark as Read
-        </Button>
+        <div className="flex gap-2 w-full">
+          <Button 
+            variant="ghost" 
+            size="sm" 
+            className="flex-1 h-8 text-[10px] uppercase tracking-wider font-bold bg-black/5 hover:bg-black hover:text-white transition-all"
+            onClick={(e) => {
+              e.stopPropagation();
+              onAction?.(book, 'reading_list');
+            }}
+            aria-label={`Add ${book.title} to reading list`}
+          >
+            <ListPlus className="w-3 h-3 mr-1" aria-hidden="true" />
+            Reading List
+          </Button>
+          <Button 
+            variant="ghost" 
+            size="sm" 
+            className="flex-1 h-8 text-[10px] uppercase tracking-wider font-bold bg-black/5 hover:bg-black hover:text-white transition-all"
+            onClick={(e) => {
+              e.stopPropagation();
+              onAction?.(book, 'completed');
+            }}
+            aria-label={`Mark ${book.title} as completed`}
+          >
+            <CheckCircle2 className="w-3 h-3 mr-1" aria-hidden="true" />
+            Completed
+          </Button>
+        </div>
       </CardFooter>
     </Card>
   );
-};
+});

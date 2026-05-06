@@ -79,7 +79,7 @@ service cloud.firestore {
     function isValidProgress(data) {
       return data.keys().hasAll(['uid', 'bookId', 'status']) &&
              data.uid == request.auth.uid &&
-             data.status in ['reading', 'completed', 'wishlist'];
+             data.status in ['reading', 'completed', 'wishlist', 'reading_list'];
     }
 
     function isValidReview(data) {

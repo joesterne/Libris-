@@ -13,7 +13,7 @@ export interface ReadingProgress {
   id?: string;
   uid: string;
   bookId: string;
-  status: 'reading' | 'completed' | 'wishlist';
+  status: 'reading' | 'completed' | 'wishlist' | 'reading_list';
   currentPage: number;
   totalPages: number;
   startedAt: any;
