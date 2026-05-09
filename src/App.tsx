@@ -80,7 +80,8 @@ import {
   Twitter,
   Facebook,
   ThumbsUp,
-  ThumbsDown
+  ThumbsDown,
+  Clock
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 
@@ -93,6 +94,14 @@ export default function App() {
   const [suggestions, setSuggestions] = useState<Book[]>([]);
   const [showSuggestions, setShowSuggestions] = useState(false);
   const [searchResults, setSearchResults] = useState<Book[]>([]);
+  const [recentSearches, setRecentSearches] = useState<string[]>(() => {
+    try {
+      const saved = localStorage.getItem('recentSearches');
+      return saved ? JSON.parse(saved) : [];
+    } catch {
+      return [];
+    }
+  });
   const [recommendations, setRecommendations] = useState<Book[]>([]);
   const [isSearching, setIsSearching] = useState(false);
   const [isRecommending, setIsRecommending] = useState(false);
@@ -286,19 +295,31 @@ export default function App() {
     return () => clearTimeout(timer);
   }, [searchQuery]);
 
-  const handleSearch = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!searchQuery.trim()) return;
+  const executeSearch = async (query: string) => {
+    if (!query.trim()) return;
     setIsSearching(true);
+    setSearchQuery(query);
+    setShowSuggestions(false);
     try {
-      const results = await searchBooks(searchQuery);
+      const results = await searchBooks(query);
       setSearchResults(results);
       setActiveTab('search');
+      
+      setRecentSearches(prev => {
+        const updated = [query, ...prev.filter(q => q !== query)].slice(0, 5);
+        localStorage.setItem('recentSearches', JSON.stringify(updated));
+        return updated;
+      });
     } catch (error) {
       toast.error("Failed to search books");
     } finally {
       setIsSearching(false);
     }
+  };
+
+  const handleSearch = async (e: React.FormEvent) => {
+    e.preventDefault();
+    executeSearch(searchQuery);
   };
 
   const handleBookAction = React.useCallback(async (book: Book, status: 'reading' | 'wishlist' | 'completed' | 'reading_list') => {
@@ -495,7 +516,9 @@ export default function App() {
         return bookA.title.localeCompare(bookB.title);
       }
       if (sortBy === 'author') {
-        return (bookA.authors[0] || '').localeCompare(bookB.authors[0] || '');
+        const authorA = bookA.authors?.[0]?.toLowerCase() || '';
+        const authorB = bookB.authors?.[0]?.toLowerCase() || '';
+        return authorA.localeCompare(authorB);
       }
       if (sortBy === 'date') {
         const dateA = a.updatedAt?.toDate?.() || a.startedAt?.toDate?.() || new Date(0);
@@ -1145,12 +1168,32 @@ export default function App() {
                   ))}
                 </div>
               ) : (
-                <div className="text-center py-20">
-                  <div className="w-20 h-20 bg-black/5 rounded-full flex items-center justify-center mx-auto mb-6">
-                    <Search className="w-8 h-8 text-muted-foreground" />
+                <div className="flex flex-col items-center py-20">
+                  <div className="text-center">
+                    <div className="w-20 h-20 bg-black/5 rounded-full flex items-center justify-center mx-auto mb-6">
+                      <Search className="w-8 h-8 text-muted-foreground" />
+                    </div>
+                    <h3 className="text-xl font-bold">Search for your next book</h3>
+                    <p className="text-muted-foreground">Enter a title, author, or topic to explore millions of books.</p>
                   </div>
-                  <h3 className="text-xl font-bold">Search for your next book</h3>
-                  <p className="text-muted-foreground">Enter a title, author, or topic to explore millions of books.</p>
+                  {recentSearches.length > 0 && (
+                    <div className="mt-12 w-full max-w-2xl px-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
+                      <h4 className="text-xs font-bold uppercase tracking-widest text-muted-foreground mb-4 text-center">Recent Searches</h4>
+                      <div className="flex flex-wrap justify-center gap-2">
+                        {recentSearches.map((term, i) => (
+                          <Button
+                            key={i}
+                            variant="secondary"
+                            className="rounded-xl bg-white shadow-sm hover:bg-black hover:text-white transition-all text-sm h-9"
+                            onClick={() => executeSearch(term)}
+                          >
+                            <Clock className="w-3 h-3 mr-2 opacity-50" />
+                            {term}
+                          </Button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
                 </div>
               )}
             </motion.div>
