@@ -53,6 +53,7 @@ import {
   DialogFooter,
 } from "./components/ui/dialog";
 import { Slider } from "./components/ui/slider";
+import { Switch } from "./components/ui/switch";
 import { Label } from "./components/ui/label";
 import {
   DropdownMenu,
@@ -104,6 +105,7 @@ export default function App() {
   });
   const [recommendations, setRecommendations] = useState<Book[]>([]);
   const [isSearching, setIsSearching] = useState(false);
+  const [searchLibbyOnly, setSearchLibbyOnly] = useState(false);
   const [isRecommending, setIsRecommending] = useState(false);
   const [sortBy, setSortBy] = useState<'title' | 'author' | 'date'>('date');
   const [activityFilter, setActivityFilter] = useState<'all' | 'reviews' | 'progress'>('all');
@@ -295,13 +297,26 @@ export default function App() {
     return () => clearTimeout(timer);
   }, [searchQuery]);
 
-  const executeSearch = async (query: string) => {
+  const executeSearch = async (query: string, customLibbyFilter?: boolean) => {
     if (!query.trim()) return;
     setIsSearching(true);
     setSearchQuery(query);
     setShowSuggestions(false);
+    
+    // Use the explicitly passed filter if available, otherwise fallback to the state
+    const useLibbyFilter = customLibbyFilter !== undefined ? customLibbyFilter : searchLibbyOnly;
+    
     try {
-      const results = await searchBooks(query);
+      let results = await searchBooks(query);
+      
+      if (useLibbyFilter) {
+        // Filter by Libby availability
+        const availabilityResults = await Promise.all(
+          results.map(book => checkLibbyAvailability(book.id))
+        );
+        results = results.filter((_, idx) => availabilityResults[idx].status !== 'unavailable');
+      }
+      
       setSearchResults(results);
       setActiveTab('search');
       
@@ -390,6 +405,37 @@ export default function App() {
     }
   };
 
+  const [isLibbyConnected, setIsLibbyConnected] = useState(() => {
+    return localStorage.getItem('libby_connected') === 'true';
+  });
+
+  const handleConnectLibby = async () => {
+    try {
+      const response = await fetch('/api/auth/libby/url');
+      if (!response.ok) {
+        throw new Error('Failed to get auth URL');
+      }
+      const { url } = await response.json();
+      window.location.href = url;
+    } catch (error) {
+      console.error('OAuth error:', error);
+      toast.error('Failed to connect to Libby');
+    }
+  };
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('libby_connected') === 'true') {
+      setIsLibbyConnected(true);
+      localStorage.setItem('libby_connected', 'true');
+      toast.success("Successfully connected to Libby!");
+      
+      // Clean up the URL by removing the query parameter without refreshing the page
+      const newUrl = window.location.pathname;
+      window.history.replaceState({}, document.title, newUrl);
+    }
+  }, []);
+
   const handleUpdateGoal = async () => {
     if (!user || !profile) return;
     try {
@@ -417,6 +463,47 @@ export default function App() {
       toast.success("Link copied to clipboard!");
     }
   };
+
+  const currentReading = React.useMemo(() => readingProgress.filter(p => p.status === 'reading'), [readingProgress]);
+  const completed = React.useMemo(() => readingProgress.filter(p => p.status === 'completed').length, [readingProgress]);
+  const wishlist = React.useMemo(() => readingProgress.filter(p => p.status === 'wishlist'), [readingProgress]);
+  const readingList = React.useMemo(() => readingProgress.filter(p => p.status === 'reading_list'), [readingProgress]);
+
+  const activities = React.useMemo(() => {
+    return [...reviews.map(r => ({ ...r, type: 'review' })), ...globalActivities.filter(p => p.status !== 'wishlist').map(p => ({ ...p, type: 'progress' }))]
+      .sort((a, b) => {
+        const dateA = a.createdAt?.toDate?.() || a.updatedAt?.toDate?.() || a.startedAt?.toDate?.() || new Date(0);
+        const dateB = b.createdAt?.toDate?.() || b.updatedAt?.toDate?.() || b.startedAt?.toDate?.() || new Date(0);
+        return dateB.getTime() - dateA.getTime();
+      });
+  }, [reviews, globalActivities]);
+
+  const sortBooks = React.useCallback((progressList: ReadingProgress[]) => {
+    return [...progressList].sort((a, b) => {
+      const bookA = books[a.bookId];
+      const bookB = books[b.bookId];
+      if (!bookA || !bookB) return 0;
+
+      if (sortBy === 'title') {
+        return bookA.title.localeCompare(bookB.title);
+      }
+      if (sortBy === 'author') {
+        const authorA = bookA.authors?.[0]?.toLowerCase() || '';
+        const authorB = bookB.authors?.[0]?.toLowerCase() || '';
+        return authorA.localeCompare(authorB);
+      }
+      if (sortBy === 'date') {
+        const dateA = a.updatedAt?.toDate?.() || a.startedAt?.toDate?.() || new Date(0);
+        const dateB = b.updatedAt?.toDate?.() || b.startedAt?.toDate?.() || new Date(0);
+        return dateB.getTime() - dateA.getTime();
+      }
+      return 0;
+    });
+  }, [books, sortBy]);
+
+  const handleBookClick = React.useCallback((bookId: string) => {
+    setSelectedBookId(bookId);
+  }, []);
 
   if (loading) {
     return (
@@ -491,47 +578,6 @@ export default function App() {
       toast.error("Failed to save feedback");
     }
   };
-
-  const currentReading = React.useMemo(() => readingProgress.filter(p => p.status === 'reading'), [readingProgress]);
-  const completed = React.useMemo(() => readingProgress.filter(p => p.status === 'completed').length, [readingProgress]);
-  const wishlist = React.useMemo(() => readingProgress.filter(p => p.status === 'wishlist'), [readingProgress]);
-  const readingList = React.useMemo(() => readingProgress.filter(p => p.status === 'reading_list'), [readingProgress]);
-
-  const activities = React.useMemo(() => {
-    return [...reviews.map(r => ({ ...r, type: 'review' })), ...globalActivities.filter(p => p.status !== 'wishlist').map(p => ({ ...p, type: 'progress' }))]
-      .sort((a, b) => {
-        const dateA = a.createdAt?.toDate?.() || a.updatedAt?.toDate?.() || a.startedAt?.toDate?.() || new Date(0);
-        const dateB = b.createdAt?.toDate?.() || b.updatedAt?.toDate?.() || b.startedAt?.toDate?.() || new Date(0);
-        return dateB.getTime() - dateA.getTime();
-      });
-  }, [reviews, globalActivities]);
-
-  const sortBooks = React.useCallback((progressList: ReadingProgress[]) => {
-    return [...progressList].sort((a, b) => {
-      const bookA = books[a.bookId];
-      const bookB = books[b.bookId];
-      if (!bookA || !bookB) return 0;
-
-      if (sortBy === 'title') {
-        return bookA.title.localeCompare(bookB.title);
-      }
-      if (sortBy === 'author') {
-        const authorA = bookA.authors?.[0]?.toLowerCase() || '';
-        const authorB = bookB.authors?.[0]?.toLowerCase() || '';
-        return authorA.localeCompare(authorB);
-      }
-      if (sortBy === 'date') {
-        const dateA = a.updatedAt?.toDate?.() || a.startedAt?.toDate?.() || new Date(0);
-        const dateB = b.updatedAt?.toDate?.() || b.startedAt?.toDate?.() || new Date(0);
-        return dateB.getTime() - dateA.getTime();
-      }
-      return 0;
-    });
-  }, [books, sortBy]);
-
-  const handleBookClick = React.useCallback((bookId: string) => {
-    setSelectedBookId(bookId);
-  }, []);
 
   return (
     <div className="min-h-screen bg-[#f5f5f5] text-[#141414] font-sans selection:bg-black selection:text-white">
@@ -672,6 +718,32 @@ export default function App() {
                     className="py-4"
                   />
                   <p className="text-xs text-muted-foreground italic">Setting a goal helps you stay motivated throughout the year.</p>
+                </div>
+                
+                <div className="space-y-4 pt-4 border-t border-black/5">
+                  <div className="flex flex-col gap-2">
+                    <Label className="font-bold text-sm">Integrations</Label>
+                    <p className="text-xs text-muted-foreground">Connect external services to enhance your experience.</p>
+                  </div>
+
+                  <div className="flex items-center justify-between p-3 rounded-xl bg-black/5 border border-black/10">
+                    <div className="flex items-center gap-3">
+                      <div className="w-8 h-8 rounded-lg bg-[#441a3c] flex items-center justify-center text-[#F4F1EA] font-bold text-sm">
+                        L
+                      </div>
+                      <span className="font-bold text-sm">Libby</span>
+                    </div>
+                    
+                    <Button 
+                      variant={isLibbyConnected ? "outline" : "default"} 
+                      size="sm" 
+                      className="rounded-lg text-xs font-bold"
+                      onClick={handleConnectLibby}
+                      disabled={isLibbyConnected}
+                    >
+                      {isLibbyConnected ? 'Connected' : 'Connect'}
+                    </Button>
+                  </div>
                 </div>
               </div>
               <DialogFooter>
@@ -1140,6 +1212,27 @@ export default function App() {
               exit={{ opacity: 0, y: -20 }}
               className="space-y-8"
             >
+              <div className="flex items-center justify-between bg-white p-4 rounded-2xl shadow-sm mb-6">
+                <div className="flex items-center gap-4">
+                  <div className="w-10 h-10 rounded-xl bg-[#441a3c] flex items-center justify-center text-[#F4F1EA] font-bold text-lg">
+                    L
+                  </div>
+                  <div>
+                    <Label className="text-base font-bold">Available on Libby</Label>
+                    <p className="text-xs text-muted-foreground">Only show books available at your library.</p>
+                  </div>
+                </div>
+                <Switch 
+                  checked={searchLibbyOnly} 
+                  onCheckedChange={(checked) => {
+                    setSearchLibbyOnly(checked);
+                    if (searchQuery) {
+                      executeSearch(searchQuery, checked);
+                    }
+                  }} 
+                />
+              </div>
+
               {isSearching ? (
                 <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 gap-8">
                   {Array.from({ length: 10 }).map((_, i) => (

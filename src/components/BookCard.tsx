@@ -1,10 +1,9 @@
 import React from 'react';
-import { Book, LibraryAvailability } from '../types';
+import { Book } from '../types';
 import { Card, CardContent, CardFooter, CardHeader, CardTitle } from './ui/card';
-import { Badge } from './ui/badge';
 import { Button } from './ui/button';
-import { BookOpen, Clock, CheckCircle2, Library, Plus, ListPlus } from 'lucide-react';
-import { checkLibbyAvailability } from '../lib/googleBooks';
+import { BookOpen, CheckCircle2, Plus, ListPlus } from 'lucide-react';
+import { LibbyBadge } from './LibbyBadge';
 
 interface BookCardProps {
   book: Book;
@@ -14,14 +13,6 @@ interface BookCardProps {
 }
 
 export const BookCard = React.memo(function BookCardComponent({ book, onAction, onClick, showAvailability = true }: BookCardProps) {
-  const [availability, setAvailability] = React.useState<LibraryAvailability | null>(null);
-
-  React.useEffect(() => {
-    if (showAvailability) {
-      checkLibbyAvailability(book.id).then(setAvailability);
-    }
-  }, [book.id, showAvailability]);
-
   return (
     <Card 
       className="overflow-hidden group hover:shadow-lg transition-all duration-300 border-none bg-white/50 backdrop-blur-sm cursor-pointer focus-visible:ring-2 focus-visible:ring-black outline-none" 
@@ -43,17 +34,8 @@ export const BookCard = React.memo(function BookCardComponent({ book, onAction, 
           className="object-cover w-full h-full transition-transform duration-500 group-hover:scale-105"
           referrerPolicy="no-referrer"
         />
-        {availability && (
-          <div className="absolute top-2 right-2">
-            <Badge 
-              variant={availability.status === 'available' ? 'default' : 'secondary'} 
-              className="bg-white/90 text-black backdrop-blur-sm border-none shadow-sm"
-              aria-label={`Libby status: ${availability.status === 'available' ? 'Available' : availability.status === 'waitlist' ? `${availability.estimatedWaitWeeks} weeks wait` : 'Unavailable'}`}
-            >
-              <Library className="w-3 h-3 mr-1" aria-hidden="true" />
-              {availability.status === 'available' ? 'Available' : availability.status === 'waitlist' ? `${availability.estimatedWaitWeeks}w wait` : 'Unavailable'}
-            </Badge>
-          </div>
+        {showAvailability && (
+          <LibbyBadge bookId={book.id} className="absolute top-2 right-2 backdrop-blur-sm shadow-sm" />
         )}
       </div>
       <CardHeader className="p-4 pb-2">

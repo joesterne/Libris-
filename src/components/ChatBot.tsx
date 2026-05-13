@@ -23,13 +23,11 @@ export const ChatBot: React.FC = () => {
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [isDeepMode, setIsDeepMode] = useState(false);
-  const scrollRef = useRef<HTMLDivElement>(null);
+  const messagesEndRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    if (scrollRef.current) {
-      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-    }
-  }, [messages]);
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages, isLoading]);
 
   const handleSend = async () => {
     if (!input.trim() || isLoading) return;
@@ -70,7 +68,7 @@ export const ChatBot: React.FC = () => {
         </div>
       </CardHeader>
       <CardContent className="flex-1 overflow-hidden p-0 flex flex-col">
-        <ScrollArea className="flex-1 p-6" ref={scrollRef}>
+        <ScrollArea className="flex-1 p-6">
           <div className="space-y-6">
             <AnimatePresence initial={false}>
               {messages.map((m, i) => (
@@ -119,6 +117,7 @@ export const ChatBot: React.FC = () => {
                 </div>
               </div>
             )}
+            <div ref={messagesEndRef} />
           </div>
         </ScrollArea>
         <div className="p-4 border-t bg-white/50">
