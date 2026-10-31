@@ -5,7 +5,7 @@ import { Input } from './ui/input';
 import { ScrollArea } from './ui/scroll-area';
 import { Avatar, AvatarFallback, AvatarImage } from './ui/avatar';
 import { Send, Bot, User, Sparkles } from 'lucide-react';
-import { chatWithAssistant, deepLiteraryAnalysis } from '../lib/gemini';
+import { chatWithAssistant, deepLiteraryAnalysis } from '../lib/aiClient';
 import ReactMarkdown from 'react-markdown';
 import { motion, AnimatePresence } from 'motion/react';
 import { Switch } from './ui/switch';
@@ -38,9 +38,15 @@ export const ChatBot: React.FC = () => {
     setIsLoading(true);
 
     try {
-      const response = isDeepMode 
+      // Pass the real transcript — this used to send [] (and the old helper
+      // ignored history anyway), so every reply was stateless.
+      const history = messages.map(m => ({
+        role: m.role === 'assistant' ? 'model' : 'user',
+        parts: [{ text: m.content }],
+      }));
+      const response = isDeepMode
         ? await deepLiteraryAnalysis(userMessage)
-        : await chatWithAssistant(userMessage, []);
+        : await chatWithAssistant(userMessage, history);
       setMessages(prev => [...prev, { role: 'assistant', content: response || "I'm sorry, I couldn't process that." }]);
     } catch (error) {
       setMessages(prev => [...prev, { role: 'assistant', content: "Error connecting to AI assistant." }]);

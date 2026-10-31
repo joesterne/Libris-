@@ -1,5 +1,9 @@
 import { GoogleGenAI } from "@google/genai";
 
+// SERVER-ONLY module: the API key must never reach the browser. The client
+// calls these through the /api/ai endpoints (see src/lib/aiClient.ts); this
+// file used to be imported by client code with the key inlined into the
+// bundle by vite.config's define.
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || '' });
 
 export const getBookRecommendations = async (history: string[], currentBooks: string[], liked: string[] = [], disliked: string[] = []) => {
@@ -19,36 +23,31 @@ export const getBookRecommendations = async (history: string[], currentBooks: st
   
   Format the response as a JSON array of objects.`;
 
-  try {
-    const response = await ai.models.generateContent({
-      model: "gemini-3-flash-preview",
-      contents: prompt,
-      config: {
-        responseMimeType: "application/json",
-      }
-    });
-    return JSON.parse(response.text || '[]');
-  } catch (error) {
-    console.error("Gemini Error:", error);
-    return [];
-  }
+  // Failures propagate to the caller (previously swallowed into `return []`,
+  // which is indistinguishable from "no recommendations" and left the UI on
+  // permanent skeleton placeholders).
+  const response = await ai.models.generateContent({
+    model: "gemini-3-flash-preview",
+    contents: prompt,
+    config: {
+      responseMimeType: "application/json",
+    }
+  });
+  return JSON.parse(response.text || '[]');
 };
 
 export const chatWithAssistant = async (message: string, history: { role: string, parts: { text: string }[] }[]) => {
   try {
-    const chat = ai.chats.create({
+    // The history parameter used to be accepted and then IGNORED — a fresh
+    // chat was created per call, so the assistant had no memory despite the
+    // conversational UI. The transcript now goes into the request.
+    const response = await ai.models.generateContent({
       model: "gemini-3-flash-preview",
+      contents: [...history, { role: 'user', parts: [{ text: message }] }],
       config: {
         systemInstruction: "You are Libris AI, a helpful reading assistant. You help users find books, track progress, and stay motivated with their reading goals. You are friendly, knowledgeable about literature, and encouraging.",
       }
     });
-
-    // Note: The SDK handles history slightly differently in some versions, 
-    // but we'll use the standard sendMessage approach.
-    const response = await chat.sendMessage({
-      message: message,
-    });
-    
     return response.text;
   } catch (error) {
     console.error("Chat Error:", error);

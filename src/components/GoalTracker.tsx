@@ -25,7 +25,7 @@ export const GoalTracker: React.FC<GoalTrackerProps> = ({ completed, goal, curre
       <CardHeader className="pb-2">
         <CardTitle className="text-sm font-bold uppercase tracking-widest flex items-center gap-2">
           <Target className="w-4 h-4" />
-          2024 Reading Goal
+          {new Date().getFullYear()} Reading Goal
         </CardTitle>
       </CardHeader>
       <CardContent className="space-y-6">

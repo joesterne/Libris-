@@ -14,13 +14,12 @@ import {
   serverTimestamp,
   setDoc,
   getDoc,
-  getDocs,
   orderBy,
   limit
 } from 'firebase/firestore';
 import { auth, db, signInWithGoogle, logout } from './firebase';
 import { Book, ReadingProgress, Review, UserProfile, LibraryAvailability, RecommendationFeedback } from './types';
-import { getBookRecommendations } from './lib/gemini';
+import { getBookRecommendations } from './lib/aiClient';
 import { searchBooks, getBookById, checkLibbyAvailability } from './lib/googleBooks';
 import { BookCard } from './components/BookCard';
 import { LibbyBadge } from './components/LibbyBadge';
@@ -66,7 +65,6 @@ import {
   Search, 
   BookOpen, 
   Library, 
-  MessageSquare, 
   LogOut, 
   Plus, 
   TrendingUp,
@@ -107,6 +105,7 @@ export default function App() {
   const [isSearching, setIsSearching] = useState(false);
   const [searchLibbyOnly, setSearchLibbyOnly] = useState(false);
   const [isRecommending, setIsRecommending] = useState(false);
+  const [recsError, setRecsError] = useState(false);
   const [sortBy, setSortBy] = useState<'title' | 'author' | 'date'>('date');
   const [activityFilter, setActivityFilter] = useState<'all' | 'reviews' | 'progress'>('all');
   const [commLimit, setCommLimit] = useState(5);
@@ -156,28 +155,36 @@ export default function App() {
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (u) => {
       setUser(u);
-      if (u) {
-        // Ensure user profile exists
-        const userRef = doc(db, 'users', u.uid);
-        const userSnap = await getDoc(userRef);
-        if (!userSnap.exists()) {
-          const newProfile = {
-            uid: u.uid,
-            email: u.email || '',
-            displayName: u.displayName || 'Reader',
-            photoURL: u.photoURL || '',
-            readingGoal: 12,
-            createdAt: serverTimestamp()
-          };
-          await setDoc(userRef, newProfile);
-          setProfile(newProfile as any);
+      // try/finally: a rejected getDoc/setDoc used to skip setLoading(false)
+      // entirely, hanging the app on the "Libris is loading..." spinner.
+      try {
+        if (u) {
+          // Ensure user profile exists
+          const userRef = doc(db, 'users', u.uid);
+          const userSnap = await getDoc(userRef);
+          if (!userSnap.exists()) {
+            const newProfile = {
+              uid: u.uid,
+              email: u.email || '',
+              displayName: u.displayName || 'Reader',
+              photoURL: u.photoURL || '',
+              readingGoal: 12,
+              createdAt: serverTimestamp()
+            };
+            await setDoc(userRef, newProfile);
+            setProfile(newProfile as any);
+          } else {
+            setProfile(userSnap.data() as UserProfile);
+          }
         } else {
-          setProfile(userSnap.data() as UserProfile);
+          setProfile(null);
         }
-      } else {
-        setProfile(null);
+      } catch (error) {
+        console.error("Failed to load user profile:", error);
+        toast.error("Couldn't load your profile — check your connection and refresh.");
+      } finally {
+        setLoading(false);
       }
-      setLoading(false);
     });
     return unsubscribe;
   }, []);
@@ -208,25 +215,32 @@ export default function App() {
     };
 
     const q = query(collection(db, 'reading_progress'), where('uid', '==', user.uid));
+    // All four listeners previously had NO error callback: a rules,
+    // permission, or network failure silently left stale/empty data.
+    const listenerError = (label: string) => (error: Error) => {
+      console.error(`${label} listener failed:`, error);
+      toast.error("Live updates hit a snag — data may be out of date.");
+    };
+
     const unsubscribeProgress = onSnapshot(q, (snapshot) => {
       const progress = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as ReadingProgress));
       setReadingProgress(progress);
       fetchMissingBooks(progress.map(p => p.bookId));
-    });
+    }, listenerError('Progress'));
 
     const qReviews = query(collection(db, 'reviews'), orderBy('createdAt', 'desc'), limit(commLimit));
     const unsubscribeReviews = onSnapshot(qReviews, (snapshot) => {
       const revs = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data(), type: 'review' } as any));
       setReviews(revs);
       fetchMissingBooks(revs.map(r => r.bookId));
-    });
+    }, listenerError('Reviews'));
 
     const qGlobal = query(collection(db, 'reading_progress'), orderBy('updatedAt', 'desc'), limit(commLimit));
     const unsubscribeGlobalProgress = onSnapshot(qGlobal, (snapshot) => {
       const progress = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data(), type: 'progress' } as any));
       setGlobalActivities(progress);
       fetchMissingBooks(progress.map(p => p.bookId));
-    });
+    }, listenerError('Community feed'));
 
     const unsubscribeFeedback = onSnapshot(query(collection(db, 'recommendation_feedback'), where('uid', '==', user.uid)), (snapshot) => {
       const fb = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as RecommendationFeedback));
@@ -235,7 +249,7 @@ export default function App() {
       const fbMap: Record<string, 'up' | 'down'> = {};
       fb.forEach(f => fbMap[f.bookId] = f.type);
       setFeedbackGiven(prev => ({ ...prev, ...fbMap }));
-    });
+    }, listenerError('Feedback'));
 
     return () => {
       unsubscribeProgress();
@@ -246,10 +260,21 @@ export default function App() {
   }, [user, commLimit]);
 
   // Recommendations Effect
+  const lastRecsSignatureRef = React.useRef<string | null>(null);
   useEffect(() => {
     const fetchRecs = async () => {
-      if (!user || readingProgress.length === 0 || recommendations.length > 0) return;
-      
+      if (!user || readingProgress.length === 0) return;
+      // Refetch when the recommendation inputs actually change. The old
+      // guard (`recommendations.length > 0` bail, feedback not in deps) meant
+      // thumbs up/down — which the UI promises will "adjust your future
+      // recommendations" — had no in-session effect at all.
+      const signature = JSON.stringify([
+        readingProgress.map(p => `${p.bookId}:${p.status}`).sort(),
+        recommendationFeedback.map(f => `${f.bookId}:${f.type}`).sort(),
+      ]);
+      if (lastRecsSignatureRef.current === signature) return;
+      lastRecsSignatureRef.current = signature;
+
       setIsRecommending(true);
       try {
         const historyTitles = readingProgress.map(p => books[p.bookId]?.title).filter(Boolean);
@@ -268,15 +293,20 @@ export default function App() {
         );
         
         setRecommendations(fullRecs.filter(Boolean));
+        setRecsError(false);
       } catch (error) {
         console.error("Failed to get recommendations", error);
+        // Surface the failure: the AI helper used to swallow errors into an
+        // empty list, leaving permanent skeleton placeholders on screen.
+        setRecsError(true);
+        lastRecsSignatureRef.current = null; // allow a retry on next change
       } finally {
         setIsRecommending(false);
       }
     };
 
     fetchRecs();
-  }, [user, readingProgress, books]);
+  }, [user, readingProgress, books, recommendationFeedback]);
 
   // Search Suggestions Effect
   useEffect(() => {
@@ -405,36 +435,26 @@ export default function App() {
     }
   };
 
-  const [isLibbyConnected, setIsLibbyConnected] = useState(() => {
-    return localStorage.getItem('libby_connected') === 'true';
-  });
+  // Libby is NOT really connected in this demo, and never can be from here:
+  // the old flow trusted an unsigned `?libby_connected=true` query param —
+  // set by a server callback that discarded the OAuth code without any token
+  // exchange — so anyone could forge the "Connected" state by typing a URL.
+  // Connected state is no longer derived from the URL or localStorage.
+  const [isLibbyConnected] = useState(false);
 
   const handleConnectLibby = async () => {
     try {
       const response = await fetch('/api/auth/libby/url');
       if (!response.ok) {
-        throw new Error('Failed to get auth URL');
+        throw new Error('Libby unavailable');
       }
       const { url } = await response.json();
       window.location.href = url;
     } catch (error) {
-      console.error('OAuth error:', error);
-      toast.error('Failed to connect to Libby');
+      console.error('Libby error:', error);
+      toast.error('Libby connection is not available in this demo — availability data is simulated.');
     }
   };
-
-  useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    if (params.get('libby_connected') === 'true') {
-      setIsLibbyConnected(true);
-      localStorage.setItem('libby_connected', 'true');
-      toast.success("Successfully connected to Libby!");
-      
-      // Clean up the URL by removing the query parameter without refreshing the page
-      const newUrl = window.location.pathname;
-      window.history.replaceState({}, document.title, newUrl);
-    }
-  }, []);
 
   const handleUpdateGoal = async () => {
     if (!user || !profile) return;
@@ -450,7 +470,7 @@ export default function App() {
     }
   };
 
-  const handleShare = (book: Book, platform?: 'twitter' | 'facebook' | 'copy') => {
+  const handleShare = async (book: Book, platform?: 'twitter' | 'facebook' | 'copy') => {
     const url = window.location.href;
     const text = `Check out "${book.title}" by ${book.authors.join(', ')} on Libris!`;
     
@@ -459,12 +479,48 @@ export default function App() {
     } else if (platform === 'facebook') {
       window.open(`https://www.facebook.com/sharer/sharer.php?u=${encodeURIComponent(url)}`, '_blank');
     } else {
-      navigator.clipboard.writeText(`${text} ${url}`);
-      toast.success("Link copied to clipboard!");
+      // Was fire-and-forget: the success toast fired unconditionally while
+      // the clipboard promise could reject (permissions, non-secure context)
+      // with nothing copied and an unhandled rejection.
+      try {
+        await navigator.clipboard.writeText(`${text} ${url}`);
+        toast.success("Link copied to clipboard!");
+      } catch {
+        toast.error("Couldn't copy the link — clipboard access was denied.");
+      }
     }
   };
 
   const currentReading = React.useMemo(() => readingProgress.filter(p => p.status === 'reading'), [readingProgress]);
+
+  // Reading streak computed from real progress timestamps. The streak card
+  // used to be hardcoded fiction — a fixed "5 days in a row!" with the first
+  // five weekday tiles always lit, regardless of any reading data.
+  const { streakDays, weekActivity } = React.useMemo(() => {
+    const dayKey = (d: Date) => `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
+    const activeDays = new Set<string>();
+    readingProgress.forEach(p => {
+      const ts: any = (p as any).updatedAt || (p as any).startedAt;
+      const d: Date | null = ts?.toDate ? ts.toDate() : ts ? new Date(ts) : null;
+      if (d && !isNaN(d.getTime())) activeDays.add(dayKey(d));
+    });
+    let streak = 0;
+    const cursor = new Date();
+    if (!activeDays.has(dayKey(cursor))) cursor.setDate(cursor.getDate() - 1);
+    while (activeDays.has(dayKey(cursor))) {
+      streak++;
+      cursor.setDate(cursor.getDate() - 1);
+    }
+    const now = new Date();
+    const monday = new Date(now);
+    monday.setDate(now.getDate() - ((now.getDay() + 6) % 7));
+    const week = Array.from({ length: 7 }, (_, i) => {
+      const d = new Date(monday);
+      d.setDate(monday.getDate() + i);
+      return activeDays.has(dayKey(d));
+    });
+    return { streakDays: streak, weekActivity: week };
+  }, [readingProgress]);
   const completed = React.useMemo(() => readingProgress.filter(p => p.status === 'completed').length, [readingProgress]);
   const wishlist = React.useMemo(() => readingProgress.filter(p => p.status === 'wishlist'), [readingProgress]);
   const readingList = React.useMemo(() => readingProgress.filter(p => p.status === 'reading_list'), [readingProgress]);
@@ -949,7 +1005,7 @@ export default function App() {
                           <p className="font-black text-lg">{book.pageCount}</p>
                         </div>
                         <div className="text-center">
-                          <p className="text-[10px] font-black uppercase tracking-widest text-muted-foreground mb-1">Libby</p>
+                          <p className="text-[10px] font-black uppercase tracking-widest text-muted-foreground mb-1">Libby (demo)</p>
                           {isCheckingLibby ? (
                             <div className="flex items-center justify-center gap-2">
                               <Sparkles className="w-3 h-3 animate-spin text-blue-500" />
@@ -1026,10 +1082,10 @@ export default function App() {
                               </div>
                               <div className="space-y-1">
                                 <div className="flex justify-between text-[10px] font-bold">
-                                  <span>{Math.round((p.currentPage / p.totalPages) * 100)}%</span>
+                                  <span>{p.totalPages > 0 ? `${Math.round((p.currentPage / p.totalPages) * 100)}%` : '—'}</span>
                                   <span>{p.currentPage}/{p.totalPages} pages</span>
                                 </div>
-                                <Progress value={(p.currentPage / p.totalPages) * 100} className="h-1.5" />
+                                <Progress value={p.totalPages > 0 ? (p.currentPage / p.totalPages) * 100 : 0} className="h-1.5" />
                               </div>
                             </div>
                           </div>
@@ -1138,7 +1194,10 @@ export default function App() {
                         </div>
                       ))
                     )}
-                    {!isRecommending && recommendations.length === 0 && searchResults.length === 0 && Array.from({ length: 4 }).map((_, i) => (
+                    {!isRecommending && recsError && recommendations.length === 0 && (
+                      <p className="text-sm text-muted-foreground">Recommendations are unavailable right now — the AI service may be unconfigured or over quota. Your library and progress are unaffected.</p>
+                    )}
+                    {!isRecommending && !recsError && recommendations.length === 0 && searchResults.length === 0 && Array.from({ length: 4 }).map((_, i) => (
                       <div key={i} className="space-y-4">
                         <div className="aspect-[2/3] bg-black/5 rounded-2xl animate-pulse" />
                         <div className="h-4 w-3/4 bg-black/5 rounded animate-pulse" />
@@ -1190,10 +1249,10 @@ export default function App() {
                       <TrendingUp className="w-5 h-5 text-white" />
                     </div>
                     <h4 className="text-xl font-bold tracking-tight">Reading Streak</h4>
-                    <p className="text-white/60 text-sm">You've read for 5 days in a row! Keep it up to reach your weekly goal.</p>
+                    <p className="text-white/60 text-sm">{streakDays > 0 ? `You've read for ${streakDays} day${streakDays === 1 ? '' : 's'} in a row! Keep it up to reach your weekly goal.` : 'Log some reading today to start a streak!'}</p>
                     <div className="flex gap-2">
                       {['M', 'T', 'W', 'T', 'F', 'S', 'S'].map((day, i) => (
-                        <div key={i} className={`flex-1 h-10 rounded-lg flex items-center justify-center text-[10px] font-bold ${i < 5 ? 'bg-white text-black' : 'bg-white/10 text-white/40'}`}>
+                        <div key={i} className={`flex-1 h-10 rounded-lg flex items-center justify-center text-[10px] font-bold ${weekActivity[i] ? 'bg-white text-black' : 'bg-white/10 text-white/40'}`}>
                           {day}
                         </div>
                       ))}
@@ -1218,8 +1277,8 @@ export default function App() {
                     L
                   </div>
                   <div>
-                    <Label className="text-base font-bold">Available on Libby</Label>
-                    <p className="text-xs text-muted-foreground">Only show books available at your library.</p>
+                    <Label className="text-base font-bold">Available on Libby (demo)</Label>
+                    <p className="text-xs text-muted-foreground">Demo filter — availability is simulated, not checked with your library.</p>
                   </div>
                 </div>
                 <Switch 
@@ -1519,9 +1578,9 @@ export default function App() {
                                 {activity.status === 'reading' && (
                                   <div className="mt-3 space-y-1">
                                     <div className="flex justify-between text-[10px] font-bold">
-                                      <span>{Math.round((activity.currentPage / activity.totalPages) * 100)}%</span>
+                                      <span>{activity.totalPages > 0 ? `${Math.round((activity.currentPage / activity.totalPages) * 100)}%` : '—'}</span>
                                     </div>
-                                    <Progress value={(activity.currentPage / activity.totalPages) * 100} className="h-1.5" />
+                                    <Progress value={activity.totalPages > 0 ? (activity.currentPage / activity.totalPages) * 100 : 0} className="h-1.5" />
                                   </div>
                                 )}
                               </div>

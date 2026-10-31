@@ -2,6 +2,9 @@ import { Book, LibraryAvailability } from "../types";
 
 export const searchBooks = async (query: string): Promise<Book[]> => {
   const response = await fetch(`https://www.googleapis.com/books/v1/volumes?q=${encodeURIComponent(query)}&maxResults=10`);
+  // Was unchecked: an API error/quota response was parsed as data and
+  // silently became "no results". Throwing lets callers' error paths fire.
+  if (!response.ok) throw new Error(`Google Books search failed: ${response.status}`);
   const data = await response.json();
   
   if (!data.items) return [];
@@ -20,6 +23,7 @@ export const searchBooks = async (query: string): Promise<Book[]> => {
 
 export const getBookById = async (id: string): Promise<Book | null> => {
   const response = await fetch(`https://www.googleapis.com/books/v1/volumes/${id}`);
+  if (!response.ok) throw new Error(`Google Books lookup failed: ${response.status}`);
   const item = await response.json();
   
   if (!item.id) return null;
@@ -36,7 +40,10 @@ export const getBookById = async (id: string): Promise<Book | null> => {
   };
 };
 
-// Simulated Libby availability check
+// SIMULATED Libby availability check — there is no real OverDrive/Libby
+// lookup behind this: a delay plus a hash of the bookId invents the status.
+// UI surfaces that render its result must label it as demo/simulated data
+// (the badge, book details, and search filter do).
 export const checkLibbyAvailability = async (bookId: string): Promise<LibraryAvailability> => {
   // Simulate network delay
   await new Promise(resolve => setTimeout(resolve, 1500));

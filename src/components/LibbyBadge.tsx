@@ -45,7 +45,7 @@ export const LibbyBadge: React.FC<LibbyBadgeProps> = ({ bookId, className }) => 
       variant={availability.status === 'available' ? 'default' : 'secondary'} 
       className={`text-[8px] px-1.5 h-5 bg-black/5 text-black border-none shadow-none shrink-0 ${className}`}
     >
-      {availability.status === 'available' ? 'Available' : availability.status === 'waitlist' ? `${availability.estimatedWaitWeeks}w` : 'N/A'}
+      {availability.status === 'available' ? 'Available (demo)' : availability.status === 'waitlist' ? `${availability.estimatedWaitWeeks}w (demo)` : 'N/A'}
     </Badge>
   );
 };
